@@ -6,15 +6,17 @@ create_dt: 2022/10/31 22:17
 describe: jcc 是 Japanese Candlestick Charting 的缩写，日本蜡烛图技术
 """
 import numpy as np
-from typing import List, Any
+from typing import List
 from collections import OrderedDict
 from czsc import CZSC
 from czsc.objects import Signal, RawBar, Direction
 from czsc.utils import get_sub_elements
 
 
-def jcc_san_xing_xian_V221023(c: CZSC, di=1, th=2) -> OrderedDict:
+def jcc_san_xing_xian_V221023(c: CZSC, **kwargs) -> OrderedDict:
     """伞形线
+
+    参数模板："{freq}_D{di}TH{th}_伞形线"
 
     **有效信号列表：**
 
@@ -26,6 +28,8 @@ def jcc_san_xing_xian_V221023(c: CZSC, di=1, th=2) -> OrderedDict:
     :param th: 可调阈值，下影线超过实体的倍数，保留两位小数
     :return: 伞形线识别结果
     """
+    di = int(kwargs.get("di", 1))
+    th = float(kwargs.get("th", 2))
     th = int(th * 100)
     k1, k2, k3 = f"{c.freq.value}_D{di}TH{th}_伞形线".split('_')
 
@@ -54,8 +58,10 @@ def jcc_san_xing_xian_V221023(c: CZSC, di=1, th=2) -> OrderedDict:
     return s
 
 
-def jcc_ten_mo_V221028(c: CZSC, di=1) -> OrderedDict:
+def jcc_ten_mo_V221028(c: CZSC, **kwargs) -> OrderedDict:
     """吞没形态；贡献者：琅盎
+
+    参数模板："{freq}_D{di}_吞没形态"
 
     **吞没形态，有三条判别标准：**
 
@@ -72,6 +78,7 @@ def jcc_ten_mo_V221028(c: CZSC, di=1) -> OrderedDict:
     :param di: 倒数第di跟K线
     :return: 吞没形态识别结果
     """
+    di = int(kwargs.get("di", 1))
 
     k1, k2, k3 = f"{c.freq.value}_D{di}_吞没形态".split('_')
     bar1 = c.bars_raw[-di]
@@ -85,12 +92,10 @@ def jcc_ten_mo_V221028(c: CZSC, di=1) -> OrderedDict:
         left_min = min([x.low for x in left_bars])
         gap = left_max - left_min
 
-        if bar1.low <= left_min + 0.25 * gap and bar1.close > bar1.open \
-                and bar1.close > bar2.high and bar1.open < bar2.low:
+        if bar1.low <= left_min + 0.25 * gap and bar1.close > bar1.open and bar1.close > bar2.high and bar1.open < bar2.low:
             v2 = "看涨吞没"
 
-        elif bar1.high >= left_max - 0.25 * gap and bar1.close < bar1.open \
-                and bar1.close < bar2.low and bar1.open > bar2.high:
+        elif bar1.high >= left_max - 0.25 * gap and bar1.close < bar1.open and bar1.close < bar2.low and bar1.open > bar2.high:
             v2 = "看跌吞没"
 
     s = OrderedDict()
@@ -99,55 +104,10 @@ def jcc_ten_mo_V221028(c: CZSC, di=1) -> OrderedDict:
     return s
 
 
-def jcc_bai_san_bin_V221030(c: CZSC, di=1, th=0.5) -> OrderedDict:
-    """白三兵；贡献者：鲁克林
-
-    **信号逻辑：**
-
-    1. 白三兵由接连出现的三根白色蜡烛线组成的，收盘价依次上升;
-    2. 开盘价位于前一天的收盘价和开盘价之间;
-    3. 分为三种形态: 挺进形态,受阻形态,停顿形态
-
-    **信号列表：**
-
-    * Signal('15分钟_D3TH50_白三兵_满足_挺进_任意_0')
-    * Signal('15分钟_D3TH50_白三兵_满足_受阻_任意_0')
-    * Signal('15分钟_D3TH50_白三兵_满足_停顿_任意_0')
-
-    :param c: CZSC 对象
-    :param di: 倒数第di根K线
-    :param th: 可调阈值，上影线超过实体的倍数，保留两位小数
-    :return: 白三兵识别结果
-    """
-    th = int(th * 100)
-    k1, k2, k3 = f"{c.freq.value}_D{di}TH{th}_白三兵".split('_')
-
-    # 取三根K线 判断是否满足基础形态
-    bars: List[RawBar] = get_sub_elements(c.bars_raw, di, n=3)
-    bar1, bar2, bar3 = bars
-
-    v1 = "满足" if bar3.close > bar2.close > bar3.open > bar1.close > bar2.open > bar1.open else "其他"
-    # 判断最后一根k线的上影线 是否小于实体0.5倍 x1 bar3上影线与bar3实体的比值,
-    # 判断最后一根k线的收盘价,涨幅是否大于倒数第二根k线实体的0.2倍, x2 bar2到bar3的涨幅与bar2实体的比值,
-    v2 = "其他"
-    if v1 == "满足":
-        x1 = (bar3.high - bar3.close) / (bar3.close - bar3.open) * 100
-        x2 = (bar3.close - bar2.close) / (bar3.close - bar3.open) * 100
-        if x1 > th:
-            v2 = "受阻"
-        elif x1 <= th and x2 <= 0.2*100:
-            v2 = "停顿"
-        elif x1 <= th and x2 > 0.2*100:
-            v2 = "挺进"
-
-    s = OrderedDict()
-    signal = Signal(k1=k1, k2=k2, k3=k3, v1=v1, v2=v2)
-    s[signal.key] = signal.value
-    return s
-
-
-def jcc_wu_yun_gai_ding_V221101(c: CZSC, di=1, z=500, th=50) -> OrderedDict:
+def jcc_wu_yun_gai_ding_V221101(c: CZSC, **kwargs) -> OrderedDict:
     """乌云盖顶，贡献者：魏永超
+
+    参数模板："{freq}_D{di}Z{z}TH{th}_乌云盖顶"
 
     **信号逻辑：**
 
@@ -166,6 +126,10 @@ def jcc_wu_yun_gai_ding_V221101(c: CZSC, di=1, z=500, th=50) -> OrderedDict:
     :param th: 可调阈值，当天收盘价跌入前一天实体高度的百分比
     :return: 乌云盖顶识别结果
     """
+    di = int(kwargs.get("di", 1))
+    z = int(kwargs.get("z", 500))
+    th = int(kwargs.get("th", 50))
+
     k1, k2, k3 = f"{c.freq.value}_D{di}Z{z}TH{th}_乌云盖顶".split('_')
     v1 = "其他"
 
@@ -195,12 +159,14 @@ def jcc_wu_yun_gai_ding_V221101(c: CZSC, di=1, z=500, th=50) -> OrderedDict:
     return s
 
 
-def jcc_ci_tou_V221101(c: CZSC, di=1, z=100, th=50) -> OrderedDict:
+def jcc_ci_tou_V221101(c: CZSC, **kwargs) -> OrderedDict:
     """刺透形态
+
+    参数模板："{freq}_D{di}Z{z}TH{th}_刺透形态"
 
     **信号列表：**
 
-    * Signal('日线_D5Z500TH50_刺绣形态_满足_任意_任意_0')
+    - Signal('15分钟_D1Z100TH50_刺透形态_满足_任意_任意_0')
 
     :param c: CZSC 对象
     :param di: 倒数第di跟K线
@@ -208,6 +174,10 @@ def jcc_ci_tou_V221101(c: CZSC, di=1, z=100, th=50) -> OrderedDict:
     :param th: 可调阈值，当天收盘价涨超前一天实体高度的百分比
     :return: 刺绣形态识别结果
     """
+    di = int(kwargs.get("di", 1))
+    z = int(kwargs.get("z", 100))
+    th = int(kwargs.get("th", 50))
+
     k1, k2, k3 = f"{c.freq.value}_D{di}Z{z}TH{th}_刺透形态".split('_')
 
     if len(c.bars_raw) < di + 15:
@@ -215,7 +185,7 @@ def jcc_ci_tou_V221101(c: CZSC, di=1, z=100, th=50) -> OrderedDict:
     else:
         bar2, bar1 = get_sub_elements(c.bars_raw, di=di, n=2)
         c1 = bar2.close < bar2.open and 1 - bar2.close / bar2.open > z / 10000
-        c2 = bar1.open < bar2.low and bar1.close > bar2.close + (bar2.open - bar2.close) * (th/100)
+        c2 = bar1.open < bar2.low and bar1.close > bar2.close + (bar2.open - bar2.close) * (th / 100)
 
         v1 = "满足" if c1 and c2 else "其他"
 
@@ -225,8 +195,10 @@ def jcc_ci_tou_V221101(c: CZSC, di=1, z=100, th=50) -> OrderedDict:
     return s
 
 
-def jcc_san_fa_V20221118(c: CZSC, di=1) -> OrderedDict:
+def jcc_san_fa_V20221118(c: CZSC, **kwargs) -> OrderedDict:
     """上升&下降三法
+
+    参数模板："{freq}_D{di}K_三法A"
 
     **上升三法形态由以下几个方面组成：**
 
@@ -259,6 +231,8 @@ def jcc_san_fa_V20221118(c: CZSC, di=1) -> OrderedDict:
     :param di: 倒数第di跟K线
     :return: 上升及下降三法形态识别结果
     """
+    di = int(kwargs.get("di", 1))
+
     def __check_san_fa(bars: List[RawBar]):
         if len(bars) < 5:
             return "其他"
@@ -302,8 +276,10 @@ def jcc_san_fa_V20221118(c: CZSC, di=1) -> OrderedDict:
     return s
 
 
-def jcc_san_fa_V20221115(c: CZSC, di=1, zdf=500) -> OrderedDict:
+def jcc_san_fa_V20221115(c: CZSC, **kwargs) -> OrderedDict:
     """上升&下降三法；贡献者：琅盎
+
+    参数模板："{freq}_D{di}K_三法"
 
     **上升三法形态由以下几个方面组成：**
 
@@ -323,14 +299,16 @@ def jcc_san_fa_V20221115(c: CZSC, di=1, zdf=500) -> OrderedDict:
 
     **信号列表：**
 
-    * Signal('60分钟_D1_上升&下降三法_满足_上升三法_任意_0')
-    * Signal('60分钟_D1_上升&下降三法_满足_下降三法_任意_0')
+    * Signal('60分钟_D1K_三法_满足_上升三法_任意_0')
+    * Signal('60分钟_D1K_三法_满足_下降三法_任意_0')
 
     :param c: CZSC 对象
     :param di: 倒数第di跟K线
     :param zdf: 倒1和倒数第5根K线涨跌幅，单位 BP
     :return: 上升及下降三法形态识别结果
     """
+    di = int(kwargs.get("di", 1))
+    zdf = int(kwargs.get("zdf", 500))
 
     k1, k2, k3 = f"{c.freq.value}_D{di}K_三法".split('_')
     bar6, bar5, bar4, bar3, bar2, bar1 = get_sub_elements(c.bars_raw, di=di, n=6)
@@ -342,11 +320,9 @@ def jcc_san_fa_V20221115(c: CZSC, di=1, zdf=500) -> OrderedDict:
 
     v1 = '满足' if bar1_zdf >= zdf and bar5_zdf > zdf and bar5.high > max_high else "其他"
 
-    if bar5.close > bar5.open and bar1.close > bar1.open \
-            and bar1.close > bar5.high and bar1.close > max_high and bar1.open > bar2.close:
+    if bar5.close > bar5.open and bar1.close > bar1.open and bar1.close > bar5.high and bar1.close > max_high and bar1.open > bar2.close:
         v2 = "上升三法"
-    elif bar5.close < bar5.open and bar1.close < bar1.open \
-            and bar1.close < bar5.low and bar1.close < min_low and bar1.open < bar2.close:
+    elif bar5.close < bar5.open and bar1.close < bar1.open and bar1.close < bar5.low and bar1.close < min_low and bar1.open < bar2.close:
         v2 = "下降三法"
     else:
         v2 = "其他"
@@ -357,8 +333,10 @@ def jcc_san_fa_V20221115(c: CZSC, di=1, zdf=500) -> OrderedDict:
     return s
 
 
-def jcc_xing_xian_V221118(c: CZSC, di=2, th=2) -> OrderedDict:
+def jcc_xing_xian_V221118(c: CZSC, **kwargs) -> OrderedDict:
     """星形态
+
+    参数模板："{freq}_D{di}TH{th}_星形线"
 
     **星形态，判断标准：**
 
@@ -396,6 +374,8 @@ def jcc_xing_xian_V221118(c: CZSC, di=2, th=2) -> OrderedDict:
     :param th: 左侧实体是当前实体的多少倍
     :return: 星形线识别结果
     """
+    di = int(kwargs.get("di", 2))
+    th = int(kwargs.get("th", 2))
     assert di >= 1
 
     k1, k2, k3 = f"{c.freq.value}_D{di}TH{th}_星形线".split('_')
@@ -433,8 +413,10 @@ def jcc_xing_xian_V221118(c: CZSC, di=2, th=2) -> OrderedDict:
     return s
 
 
-def jcc_fen_shou_xian_V20221113(c: CZSC, di=1, zdf=300) -> OrderedDict:
+def jcc_fen_shou_xian_V20221113(c: CZSC, **kwargs) -> OrderedDict:
     """分手线：分手形态是一个中继形态；贡献者：琅盎
+
+    参数模板："{freq}_D{di}K_分手线"
 
     **分手线形态，有三条判断标准 **
 
@@ -452,6 +434,9 @@ def jcc_fen_shou_xian_V20221113(c: CZSC, di=1, zdf=300) -> OrderedDict:
     :param zdf: 可调阈值，涨跌幅，单位 BP
     :return: 分离形态识别结果
     """
+    di = int(kwargs.get('di', 1))
+    zdf = int(kwargs.get('zdf', 300))
+
     k1, k2, k3 = f"{c.freq.value}_D{di}K_分手线".split('_')
     bar1 = c.bars_raw[-di]
     bar2 = c.bars_raw[-di - 1]
@@ -482,10 +467,12 @@ def jcc_fen_shou_xian_V20221113(c: CZSC, di=1, zdf=300) -> OrderedDict:
     return s
 
 
-def jcc_zhu_huo_xian_V221027(c: CZSC, di=1, th=2, zf=500) -> OrderedDict:
+def jcc_zhu_huo_xian_V221027(c: CZSC, **kwargs) -> OrderedDict:
     """烛火线，贡献者：琅盎
 
-    **有效信号列表： **
+    参数模板："{freq}_D{di}T{th}F{zf}_烛火线"
+
+    **信号列表： **
 
     - Signal('60分钟_D1T200F500_烛火线_满足_风中烛_任意_0')
     - Signal('60分钟_D1T200F500_烛火线_满足_箭在弦_任意_0')
@@ -496,7 +483,10 @@ def jcc_zhu_huo_xian_V221027(c: CZSC, di=1, th=2, zf=500) -> OrderedDict:
     :param zf: 可调阈值，震荡幅度大小，单位 BP
     :return: 烛火线识别结果
     """
-    th = int(th * 100)
+    di = int(kwargs.get('di', 1))
+    th = float(kwargs.get('th', 2))
+    zf = int(kwargs.get('zf', 500))
+
     k1, k2, k3 = f"{c.freq.value}_D{di}T{th}F{zf}_烛火线".split('_')
     bar: RawBar = c.bars_raw[-di]
     x1, x2, x3 = bar.high - max(bar.open, bar.close), abs(bar.close - bar.open), min(bar.open, bar.close) - bar.low
@@ -522,9 +512,12 @@ def jcc_zhu_huo_xian_V221027(c: CZSC, di=1, th=2, zf=500) -> OrderedDict:
     return s
 
 
-def jcc_yun_xian_V221118(c: CZSC, di=1) -> OrderedDict:
+def jcc_yun_xian_V221118(c: CZSC, **kwargs) -> OrderedDict:
     """孕线形态
 
+    参数模板："{freq}_D{di}_孕线"
+
+    ** 信号逻辑：**
     二日K线模式，分多头孕线与空头孕线，两者相反，以多头孕线为例，
     在下跌趋势中，第一日K线长阴，第二日开盘和收盘价都在第一日价格
     振幅之内，为阳线，预示趋势反转，股价上升
@@ -538,6 +531,7 @@ def jcc_yun_xian_V221118(c: CZSC, di=1) -> OrderedDict:
     :param di: 倒数第di跟K线
     :return: 孕线识别结果
     """
+    di = int(kwargs.get('di', 1))
     k1, k2, k3 = f"{c.freq.value}_D{di}_孕线".split('_')
     bar2, bar1 = get_sub_elements(c.bars_raw, di=di, n=2)
 
@@ -555,8 +549,10 @@ def jcc_yun_xian_V221118(c: CZSC, di=1) -> OrderedDict:
     return s
 
 
-def jcc_ping_tou_V221113(c: CZSC, di=2, th=100) -> OrderedDict:
+def jcc_ping_tou_V221113(c: CZSC, **kwargs) -> OrderedDict:
     """平头形态，贡献者：平凡
+
+    参数模板："{freq}_D{di}TH{th}_平头形态"
 
     **平头形态，判断标准：**
 
@@ -573,6 +569,9 @@ def jcc_ping_tou_V221113(c: CZSC, di=2, th=100) -> OrderedDict:
     :param th: 百分比，右侧K线的高/低点与当前K线的高/低点之间的差距比例，单位 BP
     :return: 平头形态识别结果
     """
+    di = int(kwargs.get('di', 2))
+    th = int(kwargs.get('th', 100))
+
     k1, k2, k3 = f"{c.freq.value}_D{di}TH{th}_平头形态".split('_')
     bar2, bar1 = get_sub_elements(c.bars_raw, di=di, n=2)
     if abs(bar2.low - bar1.low) * 10000 / max(bar2.low, bar1.low) < th:
@@ -590,8 +589,10 @@ def jcc_ping_tou_V221113(c: CZSC, di=2, th=100) -> OrderedDict:
     return s
 
 
-def jcc_zhuo_yao_dai_xian_v221113(c: CZSC, di: int = 1, left: int = 20) -> OrderedDict:
+def jcc_zhuo_yao_dai_xian_v221113(c: CZSC, **kwargs) -> OrderedDict:
     """捉腰带线，贡献者：平凡
+
+    参数模板："{freq}_D{di}L{left}_捉腰带线"
 
     **捉腰带线判别标准：**
 
@@ -608,6 +609,9 @@ def jcc_zhuo_yao_dai_xian_v221113(c: CZSC, di: int = 1, left: int = 20) -> Order
     :param left: 从di向左数left根K线
     :return: 捉腰带线识别结果
     """
+    di = int(kwargs.get('di', 1))
+    left = int(kwargs.get('left', 20))
+
     k1, k2, k3 = f"{c.freq.value}_D{di}L{left}_捉腰带线".split('_')
     v1, v2 = "其他", "其他"
 
@@ -635,8 +639,10 @@ def jcc_zhuo_yao_dai_xian_v221113(c: CZSC, di: int = 1, left: int = 20) -> Order
     return s
 
 
-def jcc_two_crow_V221108(c: CZSC, di=1):
+def jcc_two_crow_V221108(c: CZSC, **kwargs):
     """两只乌鸦
+
+    参数模板："{freq}_D{di}K_两只乌鸦"
 
     **信号逻辑：**
 
@@ -653,6 +659,7 @@ def jcc_two_crow_V221108(c: CZSC, di=1):
     :param di: 连续倒di根K线
     :return:
     """
+    di = int(kwargs.get('di', 1))
     s = OrderedDict()
     k1, k2, k3 = f"{c.freq.value}_D{di}K_两只乌鸦".split('_')
     bar3, bar2, bar1 = get_sub_elements(c.bars_raw, di=di, n=3)
@@ -667,8 +674,10 @@ def jcc_two_crow_V221108(c: CZSC, di=1):
     return s
 
 
-def jcc_three_crow_V221108(c: CZSC, di=1):
+def jcc_three_crow_V221108(c: CZSC, **kwargs):
     """三只乌鸦，贡献者：马鸣
+
+    参数模板："{freq}_D{di}_三只乌鸦"
 
     **信号逻辑：**
 
@@ -688,7 +697,7 @@ def jcc_three_crow_V221108(c: CZSC, di=1):
     :param di: 连续倒di根K线
     :return:
     """
-
+    di = int(kwargs.get('di', 1))
     s = OrderedDict()
     k1, k2, k3 = f"{c.freq.value}_D{di}_三只乌鸦".split('_')
     signal = Signal(k1=k1, k2=k2, k3=k3, v1='其他', v2='其他')
@@ -752,62 +761,109 @@ def jcc_three_crow_V221108(c: CZSC, di=1):
     return s
 
 
-def jcc_three_soldiers_V221030(c: CZSC, di=1, th=1, ri=0.2) -> OrderedDict:
-    """白三兵，贡献者：鲁克林
-
-    **信号逻辑：**
-
-    1. 三根K线均收盘价 > 开盘价；且开盘价越来越高； 且收盘价越来越高；
-    2. 三根K线的开盘价都在前一根K线的实体范围之间
-    3. 倒1K上影线与倒1K实体的比值th_cal小于th
-    4. 倒1K涨幅与倒2K涨幅的比值ri_cal大于ri
-
-    **信号列表：**
-
-    - Signal('60分钟_D1T100R20_白三兵_满足_挺进_任意_0')
-    - Signal('60分钟_D1T100R20_白三兵_满足_受阻_任意_0')
-    - Signal('60分钟_D1T100R20_白三兵_满足_停顿_任意_0')
-
-    :param c: CZSC 对象
-    :param di: 倒数第di跟K线 取倒数三根k线
-    :param th: 可调阈值，倒1K上影线与倒1K实体的比值，保留两位小数
-    :param ri: 可调阈值，倒1K涨幅与倒2K涨幅的比值，保留两位小数
-    :return: 白三兵识别结果
-    """
-    # th = 倒1K上涨阻力； ri = 倒1K相对涨幅；
-    th = int(th * 100)
-    ri = int(ri * 100)
-
-    k1, k2, k3 = f"{c.freq.value}_D{di}T{th}R{ri}_白三兵".split('_')
-
-    # 先后顺序 bar3 <-- bar2 <-- bar1
-    bar3, bar2, bar1 = get_sub_elements(c.bars_raw, di=di, n=3)
-
-    if bar3.open < bar3.close and bar2.open < bar2.close \
-            and bar1.close > bar1.open > bar2.open > bar3.open \
-            and bar1.close > bar2.close > bar3.close:
-        v1 = "满足"
-        th_cal = (bar1.high - bar1.close) / (bar1.close - bar1.open) * 100
-        ri_cal = (bar1.close - bar2.close) / (bar2.close - bar3.close) * 100
-
-        if ri_cal > ri:
-            if th_cal < th:
-                v2 = "挺进"
-            else:
-                v2 = "受阻"
-        else:
-            v2 = "停顿"
-    else:
-        v1 = "其他"
-        v2 = "其他"
-
-    s = OrderedDict()
-    signal = Signal(k1=k1, k2=k2, k3=k3, v1=v1, v2=v2)
-    s[signal.key] = signal.value
-    return s
+# def jcc_bai_san_bin_V221030(c: CZSC, di=1, th=0.5, **kwargs) -> OrderedDict:
+#     """白三兵；贡献者：鲁克林
+#
+#     **信号逻辑：**
+#
+#     1. 白三兵由接连出现的三根白色蜡烛线组成的，收盘价依次上升;
+#     2. 开盘价位于前一天的收盘价和开盘价之间;
+#     3. 分为三种形态: 挺进形态,受阻形态,停顿形态
+#
+#     **信号列表：**
+#
+#     * Signal('15分钟_D3TH50_白三兵_满足_挺进_任意_0')
+#     * Signal('15分钟_D3TH50_白三兵_满足_受阻_任意_0')
+#     * Signal('15分钟_D3TH50_白三兵_满足_停顿_任意_0')
+#
+#     :param c: CZSC 对象
+#     :param di: 倒数第di根K线
+#     :param th: 可调阈值，上影线超过实体的倍数，保留两位小数
+#     :return: 白三兵识别结果
+#     """
+#     th = int(th * 100)
+#     k1, k2, k3 = f"{c.freq.value}_D{di}TH{th}_白三兵".split('_')
+#
+#     # 取三根K线 判断是否满足基础形态
+#     bars: List[RawBar] = get_sub_elements(c.bars_raw, di, n=3)
+#     bar1, bar2, bar3 = bars
+#
+#     v1 = "满足" if bar3.close > bar2.close > bar3.open > bar1.close > bar2.open > bar1.open else "其他"
+#     # 判断最后一根k线的上影线 是否小于实体0.5倍 x1 bar3上影线与bar3实体的比值,
+#     # 判断最后一根k线的收盘价,涨幅是否大于倒数第二根k线实体的0.2倍, x2 bar2到bar3的涨幅与bar2实体的比值,
+#     v2 = "其他"
+#     if v1 == "满足":
+#         x1 = (bar3.high - bar3.close) / (bar3.close - bar3.open) * 100
+#         x2 = (bar3.close - bar2.close) / (bar3.close - bar3.open) * 100
+#         if x1 > th:
+#             v2 = "受阻"
+#         elif x1 <= th and x2 <= 0.2*100:
+#             v2 = "停顿"
+#         elif x1 <= th and x2 > 0.2*100:
+#             v2 = "挺进"
+#
+#     s = OrderedDict()
+#     signal = Signal(k1=k1, k2=k2, k3=k3, v1=v1, v2=v2)
+#     s[signal.key] = signal.value
+#     return s
 
 
-def check_szx(bar: RawBar, th: int = 10) -> bool:
+# def jcc_three_soldiers_V221030(c: CZSC, di=1, th=1, ri=0.2, **kwargs) -> OrderedDict:
+#     """白三兵，贡献者：鲁克林
+#
+#     **信号逻辑：**
+#
+#     1. 三根K线均收盘价 > 开盘价；且开盘价越来越高； 且收盘价越来越高；
+#     2. 三根K线的开盘价都在前一根K线的实体范围之间
+#     3. 倒1K上影线与倒1K实体的比值th_cal小于th
+#     4. 倒1K涨幅与倒2K涨幅的比值ri_cal大于ri
+#
+#     **信号列表：**
+#
+#     - Signal('60分钟_D1T100R20_白三兵_满足_挺进_任意_0')
+#     - Signal('60分钟_D1T100R20_白三兵_满足_受阻_任意_0')
+#     - Signal('60分钟_D1T100R20_白三兵_满足_停顿_任意_0')
+#
+#     :param c: CZSC 对象
+#     :param di: 倒数第di跟K线 取倒数三根k线
+#     :param th: 可调阈值，倒1K上影线与倒1K实体的比值，保留两位小数
+#     :param ri: 可调阈值，倒1K涨幅与倒2K涨幅的比值，保留两位小数
+#     :return: 白三兵识别结果
+#     """
+#     # th = 倒1K上涨阻力； ri = 倒1K相对涨幅；
+#     th = int(th * 100)
+#     ri = int(ri * 100)
+#
+#     k1, k2, k3 = f"{c.freq.value}_D{di}T{th}R{ri}_白三兵".split('_')
+#
+#     # 先后顺序 bar3 <-- bar2 <-- bar1
+#     bar3, bar2, bar1 = get_sub_elements(c.bars_raw, di=di, n=3)
+#
+#     if bar3.open < bar3.close and bar2.open < bar2.close \
+#             and bar1.close > bar1.open > bar2.open > bar3.open \
+#             and bar1.close > bar2.close > bar3.close:
+#         v1 = "满足"
+#         th_cal = (bar1.high - bar1.close) / (bar1.close - bar1.open) * 100
+#         ri_cal = (bar1.close - bar2.close) / (bar2.close - bar3.close) * 100
+#
+#         if ri_cal > ri:
+#             if th_cal < th:
+#                 v2 = "挺进"
+#             else:
+#                 v2 = "受阻"
+#         else:
+#             v2 = "停顿"
+#     else:
+#         v1 = "其他"
+#         v2 = "其他"
+#
+#     s = OrderedDict()
+#     signal = Signal(k1=k1, k2=k2, k3=k3, v1=v1, v2=v2)
+#     s[signal.key] = signal.value
+#     return s
+
+
+def check_szx(bar: RawBar, th: int = 10, **kwargs) -> bool:
     """判断十字线
 
     :param bar:
@@ -823,8 +879,10 @@ def check_szx(bar: RawBar, th: int = 10) -> bool:
         return False
 
 
-def jcc_szx_V221111(c: CZSC, di: int = 1, th: int = 10) -> OrderedDict:
+def jcc_szx_V221111(c: CZSC, **kwargs) -> OrderedDict:
     """十字线
+
+    参数模板："{freq}_D{di}TH{th}_十字线"
 
     **信号逻辑：**
 
@@ -843,11 +901,15 @@ def jcc_szx_V221111(c: CZSC, di: int = 1, th: int = 10) -> OrderedDict:
     - Signal('60分钟_D1TH10_十字线_长腿十字线_北方_任意_0')
 
     :param c: CZSC 对象
-    :param di: 倒数第di跟K线
-    :param th: 可调阈值，(h -l) / (c - o) 的绝对值大于 th, 判定为十字线
+    :param kwargs:
+        - di: 倒数第di跟K线
+        - th: 可调阈值，(h -l) / (c - o) 的绝对值大于 th, 判定为十字线
     :return: 十字线识别结果
     """
-    k1, k2, k3 = f"{c.freq.value}_D{di}TH{th}_十字线".split("_")
+    di = int(kwargs.get("di", 1))
+    th = int(kwargs.get("th", 10))
+    freq = c.freq.value
+    k1, k2, k3 = f"{freq}_D{di}TH{th}_十字线".split("_")
     if len(c.bars_raw) < di + 10:
         v1 = "其他"
         v2 = "其他"
@@ -877,8 +939,10 @@ def jcc_szx_V221111(c: CZSC, di: int = 1, th: int = 10) -> OrderedDict:
     return s
 
 
-def jcc_san_szx_V221122(c: CZSC, di: int = 1, th: int = 10) -> OrderedDict:
+def jcc_san_szx_V221122(c: CZSC, **kwargs) -> OrderedDict:
     """三星形态
+
+    参数模板："{freq}_D{di}T{th}_三星"
 
     **信号逻辑：**
 
@@ -893,6 +957,8 @@ def jcc_san_szx_V221122(c: CZSC, di: int = 1, th: int = 10) -> OrderedDict:
     :param th: 可调阈值，(h -l) / (c - o) 的绝对值大于 th, 判定为十字线
     :return: 识别结果
     """
+    di = int(kwargs.get("di", 1))
+    th = int(kwargs.get("th", 10))
     k1, k2, k3 = f"{c.freq.value}_D{di}T{th}_三星".split("_")
     v1 = "其他"
     if len(c.bars_raw) > 6 + di:
@@ -906,8 +972,10 @@ def jcc_san_szx_V221122(c: CZSC, di: int = 1, th: int = 10) -> OrderedDict:
     return s
 
 
-def jcc_fan_ji_xian_V221121(c: CZSC, di=1) -> OrderedDict:
+def jcc_fan_ji_xian_V221121(c: CZSC, **kwargs) -> OrderedDict:
     """反击线；贡献者：lynxluu
+
+    参数模板："{freq}_D{di}_反击线"
 
     **信号逻辑：**
 
@@ -924,7 +992,7 @@ def jcc_fan_ji_xian_V221121(c: CZSC, di=1) -> OrderedDict:
     :param di: 倒数第di根K线 取倒数三根k线
     :return: 反击线识别结果
     """
-
+    di = int(kwargs.get("di", 1))
     k1, k2, k3 = f"{c.freq.value}_D{di}_反击线".split('_')
 
     if len(c.bars_raw) < 20 + di:
@@ -957,12 +1025,10 @@ def jcc_fan_ji_xian_V221121(c: CZSC, di=1) -> OrderedDict:
         # 看跌：上升趋势； bar2阳线； bar3高开；
         v2 = "任意"
         if v1 == '满足':
-            if bar1.low <= left_min + 0.25 * gap and bar1.close > bar2.close \
-                    and bar2.open > bar2.close > bar3.open:
+            if bar1.low <= left_min + 0.25 * gap and bar1.close > bar2.close and bar2.open > bar2.close > bar3.open:
                 v2 = "看涨反击线"
 
-            elif bar1.high >= left_max - 0.25 * gap and bar2.close > bar1.close \
-                    and bar3.open > bar2.close > bar2.open:
+            elif bar1.high >= left_max - 0.25 * gap and bar2.close > bar1.close and bar3.open > bar2.close > bar2.open:
                 v2 = "看跌反击线"
 
     s = OrderedDict()
@@ -971,8 +1037,10 @@ def jcc_fan_ji_xian_V221121(c: CZSC, di=1) -> OrderedDict:
     return s
 
 
-def jcc_shan_chun_V221121(c: CZSC, di=1) -> OrderedDict:
+def jcc_shan_chun_V221121(c: CZSC, **kwargs) -> OrderedDict:
     """山川形态，表示三山形态和三川形态
+
+    参数模板："{freq}_D{di}B_山川形态"
 
     **信号逻辑：**
 
@@ -990,6 +1058,7 @@ def jcc_shan_chun_V221121(c: CZSC, di=1) -> OrderedDict:
     :param di: 截止倒数第di笔
     :return: 识别结果
     """
+    di = int(kwargs.get("di", 1))
     k1, k2, k3 = f"{c.freq.value}_D{di}B_山川形态".split('_')
 
     v1 = "其他"
@@ -1009,8 +1078,10 @@ def jcc_shan_chun_V221121(c: CZSC, di=1) -> OrderedDict:
     return s
 
 
-def jcc_gap_yin_yang_V221121(c: CZSC, di=1) -> OrderedDict:
+def jcc_gap_yin_yang_V221121(c: CZSC, **kwargs) -> OrderedDict:
     """跳空与并列阴阳形态 贡献者：平凡
+
+    参数模板："{freq}_D{di}K_并列阴阳"
 
     **向上跳空并列阴阳（向下反之）：**
 
@@ -1028,23 +1099,19 @@ def jcc_gap_yin_yang_V221121(c: CZSC, di=1) -> OrderedDict:
     :param di: 倒数第di跟K线
     :return: 识别结果
     """
-
+    di = int(kwargs.get("di", 1))
     k1, k2, k3 = f"{c.freq.value}_D{di}K_并列阴阳".split('_')
 
     v1 = "其他"
     if len(c.bars_raw) > di + 5:
         bar3, bar2, bar1 = get_sub_elements(c.bars_raw, di=di, n=3)
 
-        if min(bar1.low, bar2.low) > bar3.high \
-                and bar2.close > bar2.open \
-                and bar1.close < bar1.open \
-                and np.var((bar1.solid, bar2.solid)) < 0.2:
+        if min(bar1.low, bar2.low) > bar3.high and bar2.close > bar2.open and bar1.close < bar1.open and np.var(
+                (bar1.solid, bar2.solid)) < 0.2:
             v1 = "向上跳空"
 
-        elif max(bar1.high, bar2.high) < bar3.low \
-                and bar2.close < bar2.open \
-                and bar1.close > bar1.open \
-                and np.var((bar1.solid, bar2.solid)) < 0.2:
+        elif max(bar1.high, bar2.high) < bar3.low and bar2.close < bar2.open and bar1.close > bar1.open and np.var(
+                (bar1.solid, bar2.solid)) < 0.2:
             v1 = "向下跳空"
 
     s = OrderedDict()
@@ -1053,8 +1120,10 @@ def jcc_gap_yin_yang_V221121(c: CZSC, di=1) -> OrderedDict:
     return s
 
 
-def jcc_ta_xing_V221124(c: CZSC, di: int = 1) -> OrderedDict:
+def jcc_ta_xing_V221124(c: CZSC, **kwargs) -> OrderedDict:
     """塔形顶底
+
+    参数模板："{freq}_D{di}K_塔形"
 
     **信号逻辑：**
 
@@ -1078,6 +1147,8 @@ def jcc_ta_xing_V221124(c: CZSC, di: int = 1) -> OrderedDict:
     :param di: 倒数第di跟K线
     :return: 识别结果
     """
+    di = int(kwargs.get("di", 1))
+
     def __check_ta_xing(bars: List[RawBar]):
         if len(bars) < 5:
             return "其他"

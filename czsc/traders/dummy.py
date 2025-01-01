@@ -2,215 +2,173 @@
 """
 author: zengbin93
 email: zeng_bin8888@163.com
-create_dt: 2022/12/21 20:04
-describe: 
+create_dt: 2023/3/23 19:12
+describe:
 """
 import os
-import glob
-import json
-import shutil
+import time
 import pandas as pd
-from loguru import logger
 from tqdm import tqdm
-from datetime import datetime
-from czsc.traders.utils import trade_replay
-from czsc.traders.advanced import CzscDummyTrader
-from czsc.sensors.utils import generate_signals
-from czsc.traders.performance import PairsPerformance
-from czsc.utils import BarGenerator, get_py_namespace, dill_dump, dill_load, WordWriter
+from loguru import logger
+from concurrent.futures import ProcessPoolExecutor
+from czsc import fsa
+from czsc.traders.base import generate_czsc_signals
 
 
 class DummyBacktest:
-    def __init__(self, file_strategy):
-        """
+    def __init__(self, strategy, signals_path, results_path, read_bars, **kwargs):
+        """策略回测（支持多进程执行）
 
-        :param file_strategy: 策略定义文件，必须是 .py 结尾
+        :param strategy: CZSC择时策略
+        :param signals_path: 信号文件存放路径
+        :param results_path: 回测结果存放路径
+        :param read_bars: 读入K线数据的函数
+            函数签名为：read_bars(symbol, freq, sdt, edt, fq) -> List[RawBar]
+        :param kwargs: 其他参数
+            - signals_module_name: 信号函数模块名，用于动态加载信号文件，默认为 czsc.signals
         """
-        res_path = get_py_namespace(file_strategy)['results_path']
-        os.makedirs(res_path, exist_ok=True)
-        self.signals_path = os.path.join(res_path, "signals")
-        self.results_path = os.path.join(res_path, f"DEXP_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
-        os.makedirs(self.signals_path, exist_ok=True)
+        from czsc.strategies import CzscStrategyBase
+        assert issubclass(strategy, CzscStrategyBase), "strategy 必须是 CzscStrategyBase 的子类"
+        self.strategy = strategy
+        self.results_path = results_path
         os.makedirs(self.results_path, exist_ok=True)
+        self.signals_path = signals_path
+        os.makedirs(self.signals_path, exist_ok=True)
+        # 缓存 poss 数据
+        self.poss_path = os.path.join(results_path, 'poss')
+        os.makedirs(self.poss_path, exist_ok=True)
+        logger.add(os.path.join(self.results_path, 'dummy.log'), encoding='utf-8', enqueue=True)
+        self.read_bars = read_bars
+        self.kwargs = kwargs
 
-        # 创建 CzscDummyTrader 缓存路径
-        self.cdt_path = os.path.join(self.results_path, 'cache')
-        os.makedirs(self.cdt_path, exist_ok=True)
+        # 回测起止时间
+        self.sdt = kwargs.get('sdt', '20100101')
+        self.edt = kwargs.get('edt', '20230301')
+        self.bars_sdt = pd.to_datetime(self.sdt) - pd.Timedelta(days=365*3)
 
-        self.strategy_file = os.path.join(self.results_path, os.path.basename(file_strategy))
-        shutil.copy(file_strategy, self.strategy_file)
+    def replay(self, symbol):
+        """回放单个品种的交易"""
+        tactic = self.strategy(symbol=symbol, **self.kwargs)
+        bars = self.read_bars(symbol, tactic.base_freq, self.sdt, self.edt, fq='后复权')
+        tactic.replay(bars, os.path.join(self.results_path, f"{symbol}_replay"), sdt='20200101')
 
-        self.__debug = get_py_namespace(self.strategy_file).get('debug', False)
-        logger.add(os.path.join(self.results_path, 'dummy.log'))
+    def one_symbol_dummy(self, symbol):
+        """回测单个品种"""
+        start_time = time.time()
+        tactic = self.strategy(symbol=symbol, **self.kwargs)
+        symbol_path = os.path.join(self.poss_path, symbol)
+        if os.path.exists(symbol_path):
+            logger.info(f"{symbol} 已经回测过，跳过")
+            return None
 
-    def replay(self):
-        """执行策略回放"""
-        py = get_py_namespace(self.strategy_file)
-        strategy = py['trader_strategy']
-        replay_params = py.get('replay_params', {})
+        os.makedirs(symbol_path, exist_ok=True)
+        try:
+            file_sigs = os.path.join(self.signals_path, f"{symbol}.sigs")
+            if not os.path.exists(file_sigs):
+                bars = self.read_bars(symbol, tactic.base_freq, self.bars_sdt, self.edt, fq='后复权')
+                sigs = generate_czsc_signals(bars, signals_config=tactic.signals_config, sdt=self.sdt, df=True)
+                sigs.drop(columns=['freq', 'cache'], inplace=True)
+                sigs.to_parquet(file_sigs)
+            else:
+                sigs = pd.read_parquet(file_sigs)
+                sigs = sigs[sigs['dt'] >= self.sdt]
 
-        # 获取单个品种的基础周期K线
-        tactic = strategy("000001.SZ")
-        symbol = replay_params.get('symbol', py['dummy_params']['symbols'][0])
-        sdt = pd.to_datetime(replay_params.get('sdt', '20170101'))
-        mdt = pd.to_datetime(replay_params.get('mdt', '20200101'))
-        edt = pd.to_datetime(replay_params.get('edt', '20220101'))
-        bars = py['read_bars'](symbol, sdt, edt)
-        logger.info(f"交易回放参数 | {symbol} | 时间区间：{sdt} ~ {edt}")
+            sigs = sigs.to_dict('records')
+            trader = tactic.dummy(sigs)
 
-        # 设置回放快照文件保存目录
-        res_path = os.path.join(self.results_path, f"replay_{symbol}")
-        os.makedirs(res_path, exist_ok=True)
+        except Exception as e:
+            logger.exception(e)
+            return None
 
-        # 拆分基础周期K线，一部分用来初始化BarGenerator，随后的K线是回放区间
-        bg = BarGenerator(tactic['base_freq'], freqs=tactic['freqs'])
-        bars1 = [x for x in bars if x.dt <= mdt]
-        bars2 = [x for x in bars if x.dt > mdt]
-        for bar in bars1:
-            bg.update(bar)
+        for pos in trader.positions:
+            try:
+                file_pairs = os.path.join(symbol_path, f"{pos.name}.pairs")
+                file_holds = os.path.join(symbol_path, f"{pos.name}.holds")
 
-        trade_replay(bg, bars2, strategy, res_path)
+                pairs = pd.DataFrame(pos.pairs)
+                pairs.to_parquet(file_pairs)
 
-    def generate_symbol_signals(self, symbol):
-        """生成指定品种的交易信号
+                dfh = pd.DataFrame(pos.holds)
+                dfh['n1b'] = (dfh['price'].shift(-1) / dfh['price'] - 1) * 10000
+                dfh.fillna(0, inplace=True)
+                dfh['symbol'] = pos.symbol
+                dfh.to_parquet(file_holds)
+            except Exception as e:
+                logger.debug(f"{symbol} {pos.name} 保存失败，原因：{e}")
 
-        :param symbol:
+        logger.info(f"{symbol} 回测完成，共 {len(trader.positions)} 个持仓策略，耗时 {time.time() - start_time:.2f} 秒")
+
+    def one_pos_stats(self, pos_name):
+        """分析单个持仓策略的表现"""
+        from czsc.traders.performance import PairsPerformance
+
+        symbols = os.listdir(self.poss_path)
+        pos_pairs = []
+        pos_holds = []
+        for symbol in tqdm(symbols, desc=f"读取 {pos_name}"):
+            try:
+                dfp = pd.read_parquet(os.path.join(self.poss_path, f"{symbol}/{pos_name}.pairs"))
+                pos_pairs.append(dfp)
+
+                dfh = pd.read_parquet(os.path.join(self.poss_path, f"{symbol}/{pos_name}.holds"))
+                pos_holds.append(dfh[dfh['pos'] != 0])
+            except Exception as e:
+                logger.debug(f"{symbol} 读取失败，原因：{e}")
+
+        pairs = pd.concat(pos_pairs, ignore_index=True)
+        if not pairs.empty:
+            pp = PairsPerformance(pairs)
+            pairs.to_feather(os.path.join(self.results_path, f"{pos_name}_pairs.feather"))
+            pp.agg_to_excel(os.path.join(self.results_path, f"{pos_name}_回测结果.xlsx"))
+
+            stats = dict(pp.basic_info)
+            # 加入截面等权评价
+            holds = pd.concat(pos_holds, ignore_index=True)
+            cross = holds.groupby('dt').apply(lambda x: (x['n1b'] * x['pos']).sum() / sum(x['pos'] != 0))
+            stats['截面等权收益'] = cross.sum()
+            cross.to_excel(os.path.join(self.results_path, f"{pos_name}_截面等权收益.xlsx"), index=True)
+            stats['pos_name'] = pos_name
+            return stats
+        else:
+            return None
+
+    def execute(self, symbols, n_jobs=2, **kwargs):
+        """回测多个品种
+
+        :param symbols: 品种列表
+        :param n_jobs: 进程数量，默认为 2
+            需要注意的是：
+            1. 如果进程数过多，可能会导致内存不足
+            2. 多进程在 pycharm 的 ipython 中无法使用，需要在命令行中运行
+        :param kwargs:
         :return:
         """
-        py = get_py_namespace(self.strategy_file)
-        sdt, mdt, edt = py['dummy_params']['sdt'], py['dummy_params']['mdt'], py['dummy_params']['edt']
+        results_path = self.results_path
+        tactic = self.strategy(symbol="symbol", **self.kwargs)
+        dumps_map = {pos.name: pos.dump() for pos in tactic.positions}
 
-        bars = py['read_bars'](symbol, sdt, edt)
-        signals = generate_signals(bars, sdt=mdt, strategy=py['trader_strategy'])
+        logger.info(f"策略回测，持仓策略数量：{len(tactic.positions)}，共 {len(symbols)} 只标的，使用 {n_jobs} 个进程；"
+                    f"结果保存在 {results_path}。请耐心等待...")
 
-        df = pd.DataFrame(signals)
-        if 'cache' in df.columns:
-            del df['cache']
+        with ProcessPoolExecutor(n_jobs) as pool:
+            pool.map(self.one_symbol_dummy, sorted(symbols))
 
-        c_cols = [k for k, v in df.dtypes.to_dict().items() if v.name.startswith('object')]
-        df[c_cols] = df[c_cols].astype('category')
-
-        float_cols = [k for k, v in df.dtypes.to_dict().items() if v.name.startswith('float')]
-        df[float_cols] = df[float_cols].astype('float32')
-        return df
-
-    def execute(self):
-        """执行策略文件中定义的内容"""
-        signals_path = self.signals_path
-        py = get_py_namespace(self.strategy_file)
-
-        strategy = py['trader_strategy']
-        symbols = py['dummy_params']['symbols']
-
-        for symbol in symbols:
-            file_dfs = os.path.join(signals_path, f"{symbol}_signals.pkl")
-
-            try:
-                # 可以直接生成信号，也可以直接读取信号
-                if os.path.exists(file_dfs):
-                    dfs = pd.read_pickle(file_dfs)
-                else:
-                    dfs = self.generate_symbol_signals(symbol)
-                    dfs.to_pickle(file_dfs)
-
-                if len(dfs) == 0:
+        all_stats = []
+        with ProcessPoolExecutor(max_workers=min(n_jobs, 6)) as pool:
+            _stats = pool.map(self.one_pos_stats, list(dumps_map.keys()))
+            for _s in _stats:
+                if not _s:
                     continue
+                _s['pos_dump'] = dumps_map[_s['pos_name']]
+                all_stats.append(_s)
 
-                cdt = CzscDummyTrader(dfs, strategy)
-                dill_dump(cdt, os.path.join(self.cdt_path, f"{symbol}.cdt"))
+        file_report = os.path.join(results_path, f'{self.strategy.__name__}_回测结果汇总.xlsx')
+        report_df = pd.DataFrame(all_stats).sort_values(['截面等权收益'], ascending=False, ignore_index=True)
+        report_df.to_excel(file_report, index=False)
+        logger.info(f"策略回测完成，结果保存在 {results_path}。")
 
-                res = cdt.results
-                if "long_performance" in res.keys():
-                    logger.info(f"{res['long_performance']}")
-
-                if "short_performance" in res.keys():
-                    logger.info(f"{res['short_performance']}")
-            except Exception as e:
-                msg = f"fail on {symbol}: {e}"
-                if self.__debug:
-                    logger.exception(msg)
-                else:
-                    logger.warning(msg)
-
-    def collect(self):
-        """汇集回测结果"""
-        res = {'long_pairs': [], 'lpf': [], 'short_pairs': [], 'spf': []}
-        files = glob.glob(f"{self.cdt_path}/*.cdt")
-        for file in tqdm(files, desc="DummyBacktest::collect"):
-            cdt = dill_load(file)
-
-            if cdt.results.get("long_pairs", None):
-                res['lpf'].append(cdt.results['long_performance'])
-                res['long_pairs'].append(pd.DataFrame(cdt.results['long_pairs']))
-
-            if cdt.results.get("short_pairs", None):
-                res['spf'].append(cdt.results['short_performance'])
-                res['short_pairs'].append(pd.DataFrame(cdt.results['short_pairs']))
-
-        if res['long_pairs'] and res['lpf']:
-            long_ppf = PairsPerformance(pd.concat(res['long_pairs']))
-            res['long_ppf_basic'] = long_ppf.basic_info
-            res['long_ppf_year'] = long_ppf.agg_statistics('平仓年')
-            long_ppf.agg_to_excel(os.path.join(self.results_path, 'long_ppf.xlsx'))
-
-        if res['short_pairs'] and res['spf']:
-            short_ppf = PairsPerformance(pd.concat(res['short_pairs']))
-            res['short_ppf_basic'] = short_ppf.basic_info
-            res['short_ppf_year'] = short_ppf.agg_statistics('平仓年')
-            short_ppf.agg_to_excel(os.path.join(self.results_path, 'short_ppf.xlsx'))
-
-        return res
-
-    def report(self):
-        py = get_py_namespace(self.strategy_file)
-        strategy = py['trader_strategy']('symbol')
-
-        res = self.collect()
-        file_word = os.path.join(self.results_path, "report.docx")
-        if os.path.exists(file_word):
-            os.remove(file_word)
-        writer = WordWriter(file_word)
-
-        writer.add_title("策略Dummy回测分析报告")
-        writer.add_heading("一、基础信息", level=1)
-        if strategy.get('long_events', None):
-            writer.add_heading("多头事件定义",  level=2)
-            writer.add_paragraph(json.dumps([x.dump() for x in strategy['long_events']],
-                                            ensure_ascii=False, indent=4), first_line_indent=0)
-
-        if strategy.get('short_events', None):
-            writer.add_heading("空头事件定义", level=2)
-            writer.add_paragraph(json.dumps([x.dump() for x in strategy['short_events']], ensure_ascii=False, indent=4))
-            writer.add_paragraph('\n')
-
-        writer.add_heading("二、回测分析", level=1)
-        if res.get("long_ppf_basic", None):
-            writer.add_heading("多头表现",  level=2)
-            lpb = pd.DataFrame([res['long_ppf_basic']]).T.reset_index()
-            lpb.columns = ['名称', '取值']
-            writer.add_df_table(lpb)
-            writer.add_paragraph('\n')
-
-            lpy = res['long_ppf_year'].T.reset_index()
-            lpy.columns = lpy.iloc[0]
-            lpy = lpy.iloc[1:]
-            writer.add_df_table(lpy)
-            writer.add_paragraph('\n')
-
-        if res.get("short_ppf_basic", None):
-            writer.add_heading("空头表现",  level=2)
-            pb = pd.DataFrame([res['short_ppf_basic']]).T.reset_index()
-            pb.columns = ['名称', '取值']
-            writer.add_df_table(pb)
-            writer.add_paragraph('\n')
-
-            py = res['short_ppf_year'].T.reset_index()
-            py.columns = py.iloc[0]
-            py = py.iloc[1:]
-            writer.add_df_table(py)
-            writer.add_paragraph('\n')
-
-        writer.save()
-
-
-
+        if kwargs.get('feishu_app_id') and kwargs.get('feishu_app_secret'):
+            if os.path.exists(file_report):
+                fsa.push_message(file_report, msg_type='file', **kwargs)
+            else:
+                fsa.push_message(f"{self.strategy.__name__} 回测结果为空，请检查原因！", **kwargs)
